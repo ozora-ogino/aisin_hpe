@@ -1,0 +1,33 @@
+# Virtual environment
+venv/
+.venv/
+
+# Datasets and outputs
+datasets/
+output/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Model weights
+*.pth
+*.tar
+*.onnx
+
+# Logs and tracking
+wandb/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
