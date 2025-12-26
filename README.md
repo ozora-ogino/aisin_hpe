@@ -115,3 +115,32 @@ parser.add_argument(
 ```bash
 make evaluate
 ```
+
+## 5. 推論・可視化
+
+学習済みモデルを使用して、任意の画像に対してHead Pose推論を行い、結果を可視化します。
+
+```bash
+python sixdrepnet/inference.py \
+    --snapshot output/snapshots/run_name/_best_model.tar \
+    --data_dir path/to/images \
+    --output_dir output/inference
+```
+
+### オプション
+
+| オプション | 説明 | デフォルト |
+|------------|------|------------|
+| `--snapshot` | 学習済みモデルのパス (必須) | - |
+| `--data_dir` | 入力画像のディレクトリ (必須) | - |
+| `--output_dir` | 出力ディレクトリ | `output/inference` |
+| `--gpu` | GPU ID (-1でCPU使用) | 0 |
+| `--img_ext` | 画像ファイルの拡張子 | `.jpg` |
+| `--viz_mode` | 可視化モード: `cube` (3Dキューブ) / `axis` (軸矢印) | `cube` |
+| `--viz_size` | 可視化オーバーレイのサイズ | 100 |
+| `--filename_list` | ファイル名リスト (省略時はディレクトリ内全画像を処理) | None |
+
+### 出力
+
+- 各画像に対してYaw/Pitch/Rollを推論し、3Dポーズを描画した画像を `output_dir` に保存
+- `results.json`: 全画像の推論結果をJSON形式で出力
