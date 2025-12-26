@@ -98,22 +98,20 @@ class AFLW(Dataset):
         # We get the pose in radians
         annot = open(txt_path, 'r')
         line = annot.readline().split(' ')
-        pose = [float(line[1]), float(line[2]), float(line[3])]
-        # And convert to degrees.
-        yaw = pose[0] * 180 / np.pi
-        pitch = pose[1] * 180 / np.pi
-        roll = pose[2] * 180 / np.pi
-        # Fix the roll in AFLW
-        roll *= -1
-        # Bin values
-        bins = np.array(range(-99, 102, 3))
-        labels = torch.LongTensor(np.digitize([yaw, pitch, roll], bins) - 1)
+        # pose order: yaw, pitch, roll (in radians)
+        yaw = float(line[1])
+        pitch = float(line[2])
+        roll = float(line[3])
+
+        # Compute rotation matrix (angles in radians)
+        R = utils.get_R(pitch, yaw, roll)
+
         cont_labels = torch.FloatTensor([yaw, pitch, roll])
 
         if self.transform is not None:
             img = self.transform(img)
 
-        return img, labels, cont_labels, self.X_train[index]
+        return img, torch.FloatTensor(R), cont_labels, self.X_train[index]
 
     def __len__(self):
         # train: 18,863
@@ -311,6 +309,10 @@ def getDataset(dataset, data_dir, filename_list, transformations, train_mode = T
         pose_dataset = AFLW2000(
             data_dir, filename_list, transformations)
     elif dataset == 'BIWI':
+        pose_dataset = BIWI(
+            data_dir, filename_list, transformations, train_mode= train_mode)
+    elif dataset == 'Aisin':
+        # Aisin data uses BIWI-compatible .npz format
         pose_dataset = BIWI(
             data_dir, filename_list, transformations, train_mode= train_mode)
     elif dataset == 'AFLW':
