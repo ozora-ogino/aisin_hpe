@@ -19,11 +19,12 @@ from torchvision import transforms
 import matplotlib
 from matplotlib import pyplot as plt
 from PIL import Image
-import wandb  # added
+from torch.utils.tensorboard import SummaryWriter
 matplotlib.use('Agg')
 
 from model import SixDRepNet, SixDRepNet2
 import datasets
+import utils
 from loss import GeodesicLoss
 
 
@@ -62,11 +63,21 @@ def parse_args():
         '--snapshot', dest='snapshot', help='Path of model snapshot.',
         default='', type=str)
     parser.add_argument(
-        '--wandb_project', dest='wandb_project',
-        help='W&B project name.', default='6drepnet', type=str)
+        '--log_dir', dest='log_dir',
+        help='TensorBoard log directory.',
+        default='output/logs', type=str)
+    # Validation dataset arguments
     parser.add_argument(
-        '--wandb_entity', dest='wandb_entity',
-        help='W&B entity (team/user). Leave empty to use default.',
+        '--val_dataset', dest='val_dataset',
+        help='Validation dataset type (AFLW2000, BIWI, etc.). Leave empty to skip validation.',
+        default='', type=str)
+    parser.add_argument(
+        '--val_data_dir', dest='val_data_dir',
+        help='Directory path for validation data.',
+        default='', type=str)
+    parser.add_argument(
+        '--val_filename_list', dest='val_filename_list',
+        help='Path to validation file list.',
         default='', type=str)
 
     args = parser.parse_args()
@@ -78,6 +89,68 @@ def load_filtered_state_dict(model, snapshot):
     snapshot = {k: v for k, v in snapshot.items() if k in model_dict}
     model_dict.update(snapshot)
     model.load_state_dict(model_dict)
+
+
+def evaluate(model, val_loader, gpu):
+    """Evaluate model and return MAE for yaw, pitch, roll."""
+    model.eval()
+    total = 0
+    yaw_error = pitch_error = roll_error = 0.0
+
+    with torch.no_grad():
+        for images, r_label, cont_labels, name in val_loader:
+            images = images.cuda(gpu)
+            total += cont_labels.size(0)
+
+            # Ground truth in radians, convert to degrees
+            y_gt_deg = cont_labels[:, 0].float() * 180 / np.pi
+            p_gt_deg = cont_labels[:, 1].float() * 180 / np.pi
+            r_gt_deg = cont_labels[:, 2].float() * 180 / np.pi
+
+            R_pred = model(images)
+            euler = utils.compute_euler_angles_from_rotation_matrices(R_pred) * 180 / np.pi
+            p_pred_deg = euler[:, 0].cpu()
+            y_pred_deg = euler[:, 1].cpu()
+            r_pred_deg = euler[:, 2].cpu()
+
+            # Calculate errors with wrap-around handling
+            pitch_error += torch.sum(torch.min(torch.stack((
+                torch.abs(p_gt_deg - p_pred_deg),
+                torch.abs(p_pred_deg + 360 - p_gt_deg),
+                torch.abs(p_pred_deg - 360 - p_gt_deg),
+                torch.abs(p_pred_deg + 180 - p_gt_deg),
+                torch.abs(p_pred_deg - 180 - p_gt_deg)
+            )), 0)[0])
+
+            yaw_error += torch.sum(torch.min(torch.stack((
+                torch.abs(y_gt_deg - y_pred_deg),
+                torch.abs(y_pred_deg + 360 - y_gt_deg),
+                torch.abs(y_pred_deg - 360 - y_gt_deg),
+                torch.abs(y_pred_deg + 180 - y_gt_deg),
+                torch.abs(y_pred_deg - 180 - y_gt_deg)
+            )), 0)[0])
+
+            roll_error += torch.sum(torch.min(torch.stack((
+                torch.abs(r_gt_deg - r_pred_deg),
+                torch.abs(r_pred_deg + 360 - r_gt_deg),
+                torch.abs(r_pred_deg - 360 - r_gt_deg),
+                torch.abs(r_pred_deg + 180 - r_gt_deg),
+                torch.abs(r_pred_deg - 180 - r_gt_deg)
+            )), 0)[0])
+
+    model.train()
+
+    yaw_mae = (yaw_error / total).item()
+    pitch_mae = (pitch_error / total).item()
+    roll_mae = (roll_error / total).item()
+    total_mae = (yaw_error + pitch_error + roll_error) / (total * 3)
+
+    return {
+        'yaw': yaw_mae,
+        'pitch': pitch_mae,
+        'roll': roll_mae,
+        'mae': total_mae.item()
+    }
 
 
 if __name__ == '__main__':
@@ -98,23 +171,23 @@ if __name__ == '__main__':
     if not os.path.exists('output/snapshots/{}'.format(summary_name)):
         os.makedirs('output/snapshots/{}'.format(summary_name))
 
-    # W&B init
-    wandb_kwargs = {
-        "project": args.wandb_project,
-        "config": {
-            "dataset": args.dataset,
-            "data_dir": args.data_dir,
-            "filename_list": args.filename_list,
-            "batch_size": batch_size,
-            "lr": args.lr,
-            "num_epochs": num_epochs,
-            "scheduler": b_scheduler,
-            "backbone": "RepVGG-B1g2",
-        }
+    # TensorBoard init
+    log_dir = os.path.join(args.log_dir, summary_name)
+    writer = SummaryWriter(log_dir=log_dir)
+    print(f'TensorBoard logs: {log_dir}')
+
+    # Log hyperparameters
+    hparams = {
+        "dataset": args.dataset,
+        "data_dir": args.data_dir,
+        "filename_list": args.filename_list,
+        "batch_size": batch_size,
+        "lr": args.lr,
+        "num_epochs": num_epochs,
+        "scheduler": b_scheduler,
+        "backbone": "RepVGG-B1g2",
     }
-    if args.wandb_entity:
-        wandb_kwargs["entity"] = args.wandb_entity
-    wandb.init(**wandb_kwargs)
+    writer.add_text('hparams', str(hparams), 0)
 
     model = SixDRepNet(backbone_name='RepVGG-B1g2',
                         backbone_file='RepVGG-B1g2-train.pth',
@@ -143,6 +216,26 @@ if __name__ == '__main__':
         batch_size=batch_size,
         shuffle=True,
         num_workers=4)
+
+    # Validation data loader (optional)
+    val_loader = None
+    if args.val_dataset:
+        print('Loading validation data.')
+        val_transformations = transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            normalize
+        ])
+        val_dataset = datasets.getDataset(
+            args.val_dataset, args.val_data_dir, args.val_filename_list,
+            val_transformations, train_mode=False)
+        val_loader = torch.utils.data.DataLoader(
+            dataset=val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=4)
+        print(f'Validation dataset: {args.val_dataset}, {len(val_dataset)} samples')
 
     model.cuda(gpu)
     crit = GeodesicLoss().cuda(gpu) #torch.nn.MSELoss().cuda(gpu)
@@ -181,11 +274,8 @@ if __name__ == '__main__':
             loss_sum += loss.item()
 
             # log per-iteration loss
-            wandb.log({
-                "train/loss": loss.item(),
-                "train/epoch": epoch + (i + 1) / len(train_loader),
-                "train/lr": optimizer.param_groups[0]['lr'],
-            }, step=global_step)
+            writer.add_scalar('train/loss', loss.item(), global_step)
+            writer.add_scalar('train/lr', optimizer.param_groups[0]['lr'], global_step)
 
             if (i+1) % 100 == 0:
                 print('Epoch [%d/%d], Iter [%d/%d] Loss: '
@@ -204,15 +294,26 @@ if __name__ == '__main__':
         epoch_loss = loss_sum / iter if iter > 0 else 0.0
 
         # epoch-level logging
-        wandb.log({
-            "epoch": epoch + 1,
-            "train/epoch_loss": epoch_loss,
-            "train/lr_epoch_end": optimizer.param_groups[0]['lr'],
-        }, step=global_step)
+        writer.add_scalar('train/epoch_loss', epoch_loss, epoch + 1)
+        writer.add_scalar('train/lr_epoch_end', optimizer.param_groups[0]['lr'], epoch + 1)
 
-        # Best model tracking
-        if epoch_loss < best_loss:
-            best_loss = epoch_loss
+        # Validation
+        val_mae = None
+        if val_loader is not None:
+            val_results = evaluate(model, val_loader, gpu)
+            val_mae = val_results['mae']
+            print(f'Epoch [{epoch+1}/{num_epochs}] Validation - '
+                  f'Yaw: {val_results["yaw"]:.4f}, Pitch: {val_results["pitch"]:.4f}, '
+                  f'Roll: {val_results["roll"]:.4f}, MAE: {val_mae:.4f}')
+            writer.add_scalar('val/yaw_mae', val_results['yaw'], epoch + 1)
+            writer.add_scalar('val/pitch_mae', val_results['pitch'], epoch + 1)
+            writer.add_scalar('val/roll_mae', val_results['roll'], epoch + 1)
+            writer.add_scalar('val/mae', val_mae, epoch + 1)
+
+        # Best model tracking (use val_mae if available, otherwise train loss)
+        current_metric = val_mae if val_mae is not None else epoch_loss
+        if current_metric < best_loss:
+            best_loss = current_metric
             best_epoch = epoch + 1
             torch.save({
                 'epoch': best_epoch,
@@ -220,7 +321,8 @@ if __name__ == '__main__':
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': best_loss,
             }, best_path)
-            print(f'New best model at epoch {best_epoch} with loss {best_loss:.6f}. Saved to {best_path}')
+            metric_name = 'val MAE' if val_mae is not None else 'train loss'
+            print(f'New best model at epoch {best_epoch} with {metric_name} {best_loss:.6f}. Saved to {best_path}')
 
         # Save models at numbered epochs.
         if epoch % 1 == 0 and epoch < num_epochs:
@@ -232,5 +334,6 @@ if __name__ == '__main__':
             }, 'output/snapshots/' + summary_name + '/' + args.output_string +
                 '_epoch_' + str(epoch+1) + '.tar')
 
-    print(f'Best model was at epoch {best_epoch} with loss {best_loss:.6f}, saved to {best_path}')
-    wandb.finish()
+    metric_name = 'val MAE' if val_loader is not None else 'train loss'
+    print(f'Best model was at epoch {best_epoch} with {metric_name} {best_loss:.6f}, saved to {best_path}')
+    writer.close()

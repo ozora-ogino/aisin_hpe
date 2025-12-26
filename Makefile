@@ -7,7 +7,6 @@ build:
 start:
 	docker run --rm -it --name ${IMAGE_NAME}-${NOW} \
 						-v ${PWD}:/workspace \
-						-e WANDB_API_KEY=${WANDB_API_KEY} \
 						--gpus all \
 						--shm-size 4gb \
 						${IMAGE_NAME} bash
@@ -15,10 +14,15 @@ start:
 train:
 	docker run --rm -it --name ${IMAGE_NAME}-${NOW} \
 						-v ${PWD}:/workspace \
-						-e WANDB_API_KEY=${WANDB_API_KEY} \
 						--gpus all \
 						--shm-size 4gb \
 						${IMAGE_NAME} python sixdrepnet/train.py
+
+tensorboard:
+	docker run --rm -it --name ${IMAGE_NAME}-tensorboard \
+						-v ${PWD}:/workspace \
+						-p 6006:6006 \
+						${IMAGE_NAME} tensorboard --logdir output/logs --bind_all
 
 evaluate:
 	docker run --rm -it --name ${IMAGE_NAME}-eval-${NOW} \
