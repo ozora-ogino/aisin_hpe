@@ -4,9 +4,14 @@
 本コードでは、6DRepNetの公式レポジトリの学習再現環境を提供する。
 公式レポジトリ：https://github.com/thohemp/6DRepNet
 
-学習済みログは`output/snapshots`以下に保存されている。本学習にはWANDBを利用しているため、任意で`WANDB_API_KEY`を環境変数に設定してください。
+学習ログは `output/<run_name>/` 以下に保存される。TensorBoard でログを確認可能。
 
-また、オリジナルの学習コードではLossの追跡とベストモデルの判定がなかったため、WANDBの追加とベストモデルのPrintを追加している。また、評価用のコードも新規作成している。（`sixdrepnet/evaluate_epochs.py`)
+オリジナルの学習コードに以下の機能を追加している：
+- TensorBoard によるロギング
+- ベストモデルの自動保存
+- Mixed Precision (AMP) サポート
+- tqdm / Rich によるモダンなコンソール出力
+- 評価用スクリプト (`sixdrepnet/evaluate_epochs.py`)
 
 
 ## 1. データセット準備
@@ -72,41 +77,48 @@ make train
 
 **CLI arguments**
 
-```py
-parser = argparse.ArgumentParser(
-	description='Head pose estimation using the 6DRepNet.')
-parser.add_argument(
-	'--gpu', dest='gpu_id', help='GPU device id to use [0]',
-	default=0, type=int)
-parser.add_argument(
-	'--num_epochs', dest='num_epochs',
-	help='Maximum number of training epochs.',
-	default=80, type=int)
-parser.add_argument(
-	'--batch_size', dest='batch_size', help='Batch size.',
-	default=80, type=int)
-parser.add_argument(
-	'--lr', dest='lr', help='Base learning rate.',
-	default=0.0001, type=float)
-parser.add_argument('--scheduler', default=False, type=lambda x: (str(x).lower() == 'true'))
-parser.add_argument(
-	'--dataset', dest='dataset', help='Dataset type.',
-	default='Pose_300W_LP', type=str) #Pose_300W_LP
-parser.add_argument(
-	'--data_dir', dest='data_dir', help='Directory path for data.',
-	default='datasets/300W_LP', type=str)#BIWI_70_30_train.npz
-parser.add_argument(
-	'--filename_list', dest='filename_list',
-	help='Path to text file containing relative paths for every example.',
-	default='datasets/300W_LP/files.txt', type=str) #BIWI_70_30_train.npz #300W_LP/files.txt
-parser.add_argument(
-	'--output_string', dest='output_string',
-	help='String appended to output snapshots.', default='', type=str)
-parser.add_argument(
-	'--snapshot', dest='snapshot', help='Path of model snapshot.',
-	default='', type=str)
+```bash
+python sixdrepnet/train.py \
+  --gpu 0 \
+  --num_epochs 30 \
+  --batch_size 64 \
+  --lr 0.0001 \
+  --dataset Pose_300W_LP \
+  --data_dir datasets/300W_LP \
+  --filename_list datasets/300W_LP/files.txt \
+  --val_dataset AFLW2000 \
+  --val_data_dir datasets/AFLW2000 \
+  --val_filename_list datasets/AFLW2000/files.txt \
+  --seed 42 \
+  --milestones 10,20 \
+  --amp true \
+  --save_interval 5
 ```
-学習ログは`output/snapshots`以下に保存されます。
+
+| オプション | 説明 | デフォルト |
+|------------|------|------------|
+| `--gpu` | GPU ID | 0 |
+| `--num_epochs` | エポック数 | 30 |
+| `--batch_size` | バッチサイズ | 64 |
+| `--lr` | 学習率 | 0.0001 |
+| `--scheduler` | LRスケジューラ有効化 | false |
+| `--milestones` | LRスケジューラのマイルストーン | 10,20 |
+| `--seed` | 乱数シード | 42 |
+| `--amp` | Mixed Precision有効化 | false |
+| `--save_interval` | チェックポイント保存間隔 | 1 |
+| `--output_dir` | 出力ベースディレクトリ | output |
+| `--snapshot` | レジュームするチェックポイント | - |
+
+学習ログは `output/<run_name>/` 以下に保存されます：
+```
+output/<run_name>/
+├── config.json           # 学習設定
+├── events.out.tfevents.* # TensorBoardログ
+└── checkpoints/
+    ├── epoch_1.pt
+    ├── epoch_5.pt
+    └── best.pt
+```
 
 ## 4. 評価
 
@@ -122,7 +134,7 @@ make evaluate
 
 ```bash
 python sixdrepnet/inference.py \
-    --snapshot output/snapshots/run_name/_best_model.tar \
+    --snapshot output/<run_name>/checkpoints/best.pt \
     --data_dir path/to/images \
     --output_dir output/inference
 ```
