@@ -177,7 +177,7 @@ class BIWI(Dataset):
         self.data_dir = data_dir
         self.transform = transform
 
-        d = np.load(filename_path)
+        d = np.load(filename_path, allow_pickle=True)
 
         x_data = d['image']
         y_data = d['pose']
@@ -312,9 +312,9 @@ def getDataset(dataset, data_dir, filename_list, transformations, train_mode = T
         pose_dataset = BIWI(
             data_dir, filename_list, transformations, train_mode= train_mode)
     elif dataset == 'Aisin':
-        # Aisin data uses BIWI-compatible .npz format
-        pose_dataset = BIWI(
-            data_dir, filename_list, transformations, train_mode= train_mode)
+        # Aisin data uses AFLW-compatible format (images + .txt annotations)
+        pose_dataset = AFLW(
+            data_dir, filename_list, transformations)
     elif dataset == 'AFLW':
         pose_dataset = AFLW(
             data_dir, filename_list, transformations)
