@@ -146,10 +146,28 @@ def visualize_pose(image, yaw, pitch, roll, viz_mode='cube', size=100):
 
 
 def add_text_overlay(image, yaw, pitch, roll):
-    """Add text showing Euler angles on image."""
+    """Add text showing Euler angles on image.
+
+    Text size and position are automatically scaled based on image dimensions.
+    """
+    h, w = image.shape[:2]
+
+    # Scale factor based on image size (reference: 640px width)
+    scale_factor = max(w, h) / 640.0
+    scale_factor = max(0.3, min(scale_factor, 3.0))  # Clamp between 0.3 and 3.0
+
+    font_scale = 0.7 * scale_factor
+    thickness = max(1, int(2 * scale_factor))
+
+    # Position: 1.5% from left edge, 5% from top edge
+    x = int(w * 0.015)
+    y = int(h * 0.05)
+    # Ensure minimum margin
+    y = max(y, int(30 * scale_factor))
+
     text = f'Yaw: {yaw:.1f}  Pitch: {pitch:.1f}  Roll: {roll:.1f}'
-    cv2.putText(image, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
-                0.7, (0, 255, 0), 2, cv2.LINE_AA)
+    cv2.putText(image, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX,
+                font_scale, (0, 255, 0), thickness, cv2.LINE_AA)
     return image
 
 
