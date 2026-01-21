@@ -6,15 +6,13 @@
 
 学習ログは `output/<run_name>/` 以下に保存される。TensorBoard でログを確認可能。
 
-オリジナルの学習コードに以下の機能を追加している：
-- TensorBoard によるロギング
-- ベストモデルの自動保存
-- Mixed Precision (AMP) サポート
-- tqdm / Rich によるモダンなコンソール出力
-- 評価用スクリプト (`sixdrepnet/evaluate_epochs.py`)
-
+2025/1に実施したPhase2では以下の変更を加えている。
+- Aisin様データセットを6DRepnet対応のデータフォーマットに変換するためのスクリプトの実装
+- 学習スクリプトの改善（TensorBoard, seed, ベストモデルの自動保存など）
 
 ## 1. データセット準備
+
+### オープンデータセット
 
 ※ すでにdatasets/以下に前処理済みのデータを格納済みであるため、こちらはスキップしていただけます。
 
@@ -28,7 +26,6 @@
 
 ダウンロード後、すべて *datasets* ディレクトリ内に保存します。
 
----
 
 ### **● 300W-LP / AFLW2000 の前処理（ファイルリスト作成）**
 
@@ -55,6 +52,50 @@ BIWI は顔検出器で顔画像を切り出す必要があります。
 
 ---
 
+### アイシン様データセット
+
+`./datasets/`以下に以下の形でフォルダを配置する。
+
+```
+./datasets/<Dataset名>/
+├── image # 0X_ で始まるシーンごとの画像フォルダ。
+│   ├── 01_250116_111927_0
+│   ├── 02_250116_112416_0
+│   ├── 04_250116_144003_0
+│   ├── 05_250116_144439_0
+│   ├── 07_250116_153359_0
+│   ├── 08_250116_153735_0
+│   ├── 10_250116_150705_0
+│   └── 11_250116_151101_0
+└── motion # 00X_ で始まるシーンごとの解析ファイル。
+    ├── 001_解析結果ファイル.csv
+    ├── 002_解析結果ファイル.csv
+    ├── 004_解析結果ファイル.csv
+    ├── 005_解析結果ファイル.csv
+    ├── 007_解析結果ファイル.csv
+    ├── 008_解析結果ファイル.csv
+    ├── 010_解析結果ファイル.csv
+    └── 011_解析結果ファイル.csv
+```
+
+```bash
+# Docker Buildしてない場合
+make build
+# Dockerコンテナを開始し、Dockerコンテナ内でコマンド操作をできるようにする。コンテナ内で以下のコマンドを実行。
+make start
+> python3 sixdrepnet/convert_aisin.py --aisin_root datasets/<Dataset Name>/ --output_dir datasets/<Dataset Name>/converted
+# 実行後、output_dir以下に学習用データセットが出力される。
+```
+
+本プロジェクトでは、`datasets/20260108_AisinData_Train`に学習データ、`datasets/20260108_AisinData_Test`に検証データを格納し、以下の手順で変換を行なった。　
+
+```bash
+python3 sixdrepnet/convert_aisin.py --aisin_root datasets/20260108_AisinData_Train/ --output_dir datasets/20260108_AisinData_Train/converted
+python3 sixdrepnet/convert_aisin.py --aisin_root datasets/20260108_AisinData_Test/ --output_dir datasets/20260108_AisinData_Test/converted
+```
+
+---
+
 ## 2. 学習
 
 事前学習済みの RepVGG モデル
@@ -70,9 +111,15 @@ BIWI は顔検出器で顔画像を切り出す必要があります。
 ```sh
 # Docker build
 make build
-
-# Start training on Docker (python sixdrepnet/train.py)
-make train
+make start
+python sixdrepnet/train.py \
+  --dataset Aisin \
+  --data_dir datasets/20260108_AisinData_Train/converted \
+  --filename_list datasets/20260108_AisinData_Train/converted/files.txt \
+  --val_dataset Aisin \
+  --val_data_dir datasets/20260108_AisinData_Test/converted \
+  --val_filename_list datasets/20260108_AisinData_Test/converted/files.txt \
+  --num_epochs 90
 ```
 
 **CLI arguments**
@@ -120,15 +167,7 @@ output/<run_name>/
     └── best.pt
 ```
 
-## 4. 評価
-
-以下のコマンドで評価が実行され、評価結果は、`output/evaluate`以下に格納されます。
-
-```bash
-make evaluate
-```
-
-## 5. 推論・可視化
+## 4. 推論・可視化
 
 学習済みモデルを使用して、任意の画像に対してHead Pose推論を行い、結果を可視化します。
 
