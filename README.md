@@ -58,25 +58,35 @@ BIWI は顔検出器で顔画像を切り出す必要があります。
 
 ```
 ./datasets/<Dataset名>/
-├── image # 0X_ で始まるシーンごとの画像フォルダ。
+├── image    # 0X_ で始まるシーンごとの画像フォルダ。
 │   ├── 01_250116_111927_0
 │   ├── 02_250116_112416_0
-│   ├── 04_250116_144003_0
-│   ├── 05_250116_144439_0
-│   ├── 07_250116_153359_0
-│   ├── 08_250116_153735_0
-│   ├── 10_250116_150705_0
-│   └── 11_250116_151101_0
-└── motion # 00X_ で始まるシーンごとの解析ファイル。
-    ├── 001_解析結果ファイル.csv
-    ├── 002_解析結果ファイル.csv
-    ├── 004_解析結果ファイル.csv
-    ├── 005_解析結果ファイル.csv
-    ├── 007_解析結果ファイル.csv
-    ├── 008_解析結果ファイル.csv
-    ├── 010_解析結果ファイル.csv
-    └── 011_解析結果ファイル.csv
+│   └── ...
+├── motion   # 00X_ で始まるシーンごとの解析ファイル。
+│   ├── 001_解析結果ファイル.csv
+│   ├── 002_解析結果ファイル.csv
+│   └── ...
+└── keypoint # (骨格点Cropを使用する場合のみ必要) imageと同じフォルダ構成で、画像ごとのキーポイントCSVを格納。
+    ├── 01_250116_111927_0
+    │   ├── <image_stem>.csv
+    │   └── ...
+    ├── 02_250116_112416_0
+    │   ├── <image_stem>.csv
+    │   └── ...
+    └── ...
 ```
+
+`keypoint/` ディレクトリ内の各CSVは、対応する画像と同じファイル名（拡張子のみ `.csv`）で配置する。CSVには以下のカラムが必要：
+
+| カラム名 | 説明 |
+|----------|------|
+| `AnnoName` | キーポイント名（`Nose`, `LEye`, `REye`, `LEar`, `REar` が顔領域の算出に使用される） |
+| `CentorX` | キーポイントのX座標（ピクセル） |
+| `CentorY` | キーポイントのY座標（ピクセル） |
+
+顔キーポイントが3点未満の場合、肩（`LShoulder`, `RShoulder`）を含めたフォールバックが行われる。フォールバック込みでも3点未満の場合はそのフレームはスキップされる。
+
+#### 変換方法1: InsightFace による顔検出Crop（デフォルト）
 
 ```bash
 # Docker Buildしてない場合
@@ -87,7 +97,41 @@ make start
 # 実行後、output_dir以下に学習用データセットが出力される。
 ```
 
-本プロジェクトでは、`datasets/20260108_AisinData_Train`に学習データ、`datasets/20260108_AisinData_Test`に検証データを格納し、以下の手順で変換を行なった。　
+#### 変換方法2: 骨格点（Keypoint）ベースのCrop
+
+骨格点ベースのCropを使用するには、`--face_detect_method keypoint` を指定する。この場合、上記の `keypoint/` ディレクトリが必須となる。
+
+```bash
+python3 sixdrepnet/convert_aisin.py \
+    --aisin_root datasets/<Dataset Name>/ \
+    --output_dir datasets/<Dataset Name>/converted \
+    --face_detect_method keypoint
+```
+
+`--crop_margin` で骨格点のBounding Boxに対するマージン比率を調整可能（デフォルト: `0.6`）。
+
+```bash
+# マージンを0.4に変更する例
+python3 sixdrepnet/convert_aisin.py \
+    --aisin_root datasets/<Dataset Name>/ \
+    --output_dir datasets/<Dataset Name>/converted \
+    --face_detect_method keypoint \
+    --crop_margin 0.4
+```
+
+#### convert_aisin.py の主要オプション
+
+| オプション | 説明 | デフォルト |
+|------------|------|------------|
+| `--aisin_root` | アイシンデータのルートディレクトリ (必須) | - |
+| `--output_dir` | 出力ディレクトリ (必須) | - |
+| `--face_detect_method` | 顔検出方法: `insightface` / `keypoint` | `insightface` |
+| `--crop_margin` | Crop時のマージン比率 | 0.6 |
+| `--img_size` | 出力画像サイズ (px) | 64 |
+| `--on_no_face` | 顔未検出時の挙動: `skip` / `center` / `error` | `skip` |
+| `--det_size` | InsightFaceの検出解像度 | 640 |
+
+本プロジェクトでは、`datasets/20260108_AisinData_Train`に学習データ、`datasets/20260108_AisinData_Test`に検証データを格納し、以下の手順で変換を行なった。
 
 ```bash
 python3 sixdrepnet/convert_aisin.py --aisin_root datasets/20260108_AisinData_Train/ --output_dir datasets/20260108_AisinData_Train/converted
