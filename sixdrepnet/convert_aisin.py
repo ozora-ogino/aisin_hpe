@@ -104,6 +104,7 @@ class ConversionStats:
     missing_csv: int = 0
     face_detection_success: int = 0
     face_detection_failed: int = 0
+    keypoint_csv_missing: int = 0
     processing_errors: int = 0
     train_samples: int = 0
     val_samples: int = 0
@@ -122,6 +123,7 @@ class ConversionStats:
             f"Missing CSV files: {self.missing_csv}",
             f"Face detection success: {self.face_detection_success}",
             f"Face detection failed: {self.face_detection_failed}",
+            f"Keypoint CSV missing: {self.keypoint_csv_missing}",
             f"Processing errors: {self.processing_errors}",
             "=" * 50,
         ])
@@ -311,9 +313,11 @@ def parse_args():
     p.add_argument("--output_format", choices=["aflw", "npz", "both"], default="aflw")
 
     p.add_argument("--img_size", type=int, default=64)
-    p.add_argument("--crop_margin", type=float, default=0.4)
+    p.add_argument("--crop_margin", type=float, default=0.6)
     p.add_argument("--on_no_face", choices=["skip", "center", "error"], default="skip")
     p.add_argument("--det_size", type=int, default=640)
+    p.add_argument("--face_detect_method", choices=["insightface", "keypoint"],
+                   default="insightface")
 
     p.add_argument("--verbose", "-v", action="store_true")
     return p.parse_args()
@@ -353,6 +357,81 @@ def center_crop_resize(img_bgr, size: int) -> np.ndarray:
     y0 = (h - s) // 2
     x0 = (w - s) // 2
     crop = img_bgr[y0:y0+s, x0:x0+s]
+    return cv2.resize(crop, (size, size))
+
+
+# ============================================================
+# Keypoint-based face crop
+# ============================================================
+FACE_KP_NAMES = {"Nose", "LEye", "REye", "LEar", "REar"}
+SHOULDER_KP_NAMES = {"LShoulder", "RShoulder"}
+
+
+def load_face_keypoints(kp_csv_path: Path) -> Optional[np.ndarray]:
+    """Load face keypoints from a COCO-keypoint CSV.
+
+    Returns an (N, 2) array of (x, y) pixel coordinates for face points.
+    Falls back to include shoulder points if fewer than 3 face points found.
+    Returns None if fewer than 3 points total.
+    """
+    try:
+        df = pd.read_csv(kp_csv_path)
+    except Exception:
+        return None
+
+    df.columns = df.columns.str.strip()
+    if "AnnoName" not in df.columns or "CentorX" not in df.columns or "CentorY" not in df.columns:
+        return None
+
+    face_rows = df[df["AnnoName"].isin(FACE_KP_NAMES)]
+    pts = face_rows[["CentorX", "CentorY"]].values.astype(np.float64)
+
+    if len(pts) < 3:
+        # fallback: also include shoulders
+        fallback_rows = df[df["AnnoName"].isin(FACE_KP_NAMES | SHOULDER_KP_NAMES)]
+        pts = fallback_rows[["CentorX", "CentorY"]].values.astype(np.float64)
+
+    if len(pts) < 3:
+        return None
+
+    return pts
+
+
+def crop_face_from_keypoints(img_bgr: np.ndarray, kp_csv_path: Path,
+                             margin: float, size: int) -> Optional[np.ndarray]:
+    """Crop a face region from keypoints.
+
+    Computes bounding box from keypoints, expands to square, applies margin,
+    clips to image bounds, and resizes.
+    """
+    pts = load_face_keypoints(kp_csv_path)
+    if pts is None:
+        return None
+
+    h_img, w_img = img_bgr.shape[:2]
+
+    x_min, y_min = pts.min(axis=0)
+    x_max, y_max = pts.max(axis=0)
+
+    # make square
+    cx = (x_min + x_max) / 2.0
+    cy = (y_min + y_max) / 2.0
+    side = max(x_max - x_min, y_max - y_min)
+    # avoid zero-size box (all points at same location)
+    side = max(side, 1.0)
+
+    # expand by margin (same semantics as InsightFace crop)
+    half = side * (0.5 + margin)
+
+    x1 = int(max(0, cx - half))
+    y1 = int(max(0, cy - half))
+    x2 = int(min(w_img, cx + half))
+    y2 = int(min(h_img, cy + half))
+
+    crop = img_bgr[y1:y2, x1:x2]
+    if crop.size == 0:
+        return None
+
     return cv2.resize(crop, (size, size))
 
 
@@ -430,10 +509,15 @@ def main():
     args = parse_args()
     setup_logging(args.verbose)
 
-    detector = init_face_detector(args.det_size)
-    if detector is None:
-        logging.error("InsightFace not available")
-        sys.exit(1)
+    detector = None
+    if args.face_detect_method == "insightface":
+        detector = init_face_detector(args.det_size)
+        if detector is None:
+            logging.error("InsightFace not available")
+            sys.exit(1)
+
+    keypoint_dir = (Path(args.aisin_root) / "keypoint"
+                    if args.face_detect_method == "keypoint" else None)
 
     stats = ConversionStats()
     samples: List[Dict[str, object]] = []
@@ -481,7 +565,15 @@ def main():
                     stats.processing_errors += 1
                     continue
 
-                face = detect_and_crop_face(img, detector, args.crop_margin, args.img_size)
+                if args.face_detect_method == "keypoint":
+                    kp_path = keypoint_dir / img_map[iid].parent.name / (img_map[iid].stem + ".csv")
+                    if not kp_path.exists():
+                        stats.keypoint_csv_missing += 1
+                        face = None
+                    else:
+                        face = crop_face_from_keypoints(img, kp_path, args.crop_margin, args.img_size)
+                else:
+                    face = detect_and_crop_face(img, detector, args.crop_margin, args.img_size)
                 if face is None:
                     stats.face_detection_failed += 1
                     if args.on_no_face == "skip":
